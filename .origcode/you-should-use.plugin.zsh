@@ -8,15 +8,12 @@ if ! type "tput" > /dev/null; then
 else
     NONE="$(tput sgr0)"
     BOLD="$(tput bold)"
-    DIM="$(tput dim)"
     RED="$(tput setaf 1)"
-    GREEN="$(tput setaf 2)"
     YELLOW="$(tput setaf 3)"
-    BLUE="$(tput setaf 4)"
-    PURPLE="$(tput setaf 6)"
+    PURPLE="$(tput setaf 5)"
 fi
 
-check_alias_usage() {
+function check_alias_usage() {
     # Optional parameter that limits how far back history is checked
     # I've chosen a large default value instead of bypassing tail because it's simpler
     # TODO: this should probably be cleaned up
@@ -70,7 +67,7 @@ check_alias_usage() {
 
 # Writing to a buffer rather than directly to stdout/stderr allows us to decide
 # if we want to write the reminder message before or after a command has been executed
-_write_ysu_buffer() {
+function _write_ysu_buffer() {
     _YSU_BUFFER+="$@"
 
     # Maintain historical behaviour by default
@@ -78,27 +75,51 @@ _write_ysu_buffer() {
     if [[ "$position" = "before" ]]; then
         _flush_ysu_buffer
     elif [[ "$position" != "after" ]]; then
-        printf "${RED}${BOLD}Unknown value for YSU_MESSAGE_POSITION '$position'. ${NONE}" >&2
-        printf "${RED}Expected value 'before' or 'after'${NONE}\n" >&2
+        (>&2 printf "${RED}${BOLD}Unknown value for YSU_MESSAGE_POSITION '$position'. ")
+        (>&2 printf "Expected value 'before' or 'after'${NONE}\n")
         _flush_ysu_buffer
     fi
 }
 
-_flush_ysu_buffer() {
+function _flush_ysu_buffer() {
     # It's important to pass $_YSU_BUFFER to printfs first argument
     # because otherwise all escape codes will not printed correctly
     (>&2 printf "$_YSU_BUFFER")
     _YSU_BUFFER=""
 }
 
+function ysu_message() {
+    local DEFAULT_MESSAGE_FORMAT="${BOLD}${YELLOW}\
+Found existing %alias_type for ${PURPLE}\"%command\"${YELLOW}. \
+You should use: ${PURPLE}\"%alias\"${NONE}"
+
+    local alias_type_arg="${1}"
+    local command_arg="${2}"
+    local alias_arg="${3}"
+
+    # Escape arguments which will be interpreted by printf incorrectly
+    # unfortunately there does not seem to be a nice way to put this into
+    # a function because returning the values requires to be done by printf/echo!!
+    command_arg="${command_arg//\%/%%}"
+    command_arg="${command_arg//\\/\\\\}"
+
+    local MESSAGE="${YSU_MESSAGE_FORMAT:-"$DEFAULT_MESSAGE_FORMAT"}"
+    MESSAGE="${MESSAGE//\%alias_type/$alias_type_arg}"
+    MESSAGE="${MESSAGE//\%command/$command_arg}"
+    MESSAGE="${MESSAGE//\%alias/$alias_arg}"
+
+    _write_ysu_buffer "$MESSAGE\n"
+}
+
 
 # Prevent command from running if hardcore mode enabled
-_check_ysu_hardcore() {
+function _check_ysu_hardcore() {
     if [[ "$YSU_HARDCORE" = 1 ]]; then
-        _write_ysu_buffer "${RED}${BOLD}You Should Use hardcore mode enabled. Use your aliases!${NONE}\n"
+        _write_ysu_buffer "${BOLD}${RED}You Should Use hardcore mode enabled. Use your aliases!${NONE}\n"
         kill -s INT $$
     fi
 }
+
 
 function _check_git_aliases() {
     local typed="$1"
@@ -122,8 +143,8 @@ function _check_git_aliases() {
             fi
 
             if [[ "$expanded" = "git $value" || "$expanded" = "git $value "* ]]; then
-              _add_to_aliases "git alias" "$value" "git $key"
-              found=true
+                ysu_message "git alias" "$value" "git $key"
+                found=true
             fi
         done
 
@@ -163,9 +184,8 @@ function _check_global_aliases() {
               "$typed" = *" $value" || \
               "$typed" = "$value "* || \
               "$typed" = "$value" ]]; then
-
-          _add_to_aliases "global alias" "$value" "$key"
-          found=true
+            ysu_message "global alias" "$value" "$key"
+            found=true
         fi
     done
 
@@ -174,7 +194,8 @@ function _check_global_aliases() {
     fi
 }
 
-_check_aliases() {
+
+function _check_aliases() {
     local typed="$1"
     local expanded="$2"
 
@@ -225,16 +246,19 @@ _check_aliases() {
 
     # Print result matches based on current mode
     if [[ "$YSU_MODE" = "ALL" ]]; then
-      for key in ${(@ok)found_aliases}; do
-          value="${aliases[$key]}"
-          _add_to_aliases "alias" "$value" "$key"
-      done
+        for key in ${(@ok)found_aliases}; do
+            value="${aliases[$key]}"
+            ysu_message "alias" "$value" "$key"
+        done
+
     elif [[ (-z "$YSU_MODE" || "$YSU_MODE" = "BESTMATCH") && -n "$best_match" ]]; then
         # make sure that the best matched alias has not already
         # been typed by the user
         value="${aliases[$best_match]}"
-        [[ "$typed" = "$best_match" || "$typed" = "$best_match "* ]] && return
-        _add_to_aliases "alias" "$value" "$best_match"
+        if [[ "$typed" = "$best_match" || "$typed" = "$best_match "* ]]; then
+            return
+        fi
+        ysu_message "alias" "$value" "$best_match"
     fi
 
     if [[ -n "$found_aliases" ]]; then
@@ -242,62 +266,20 @@ _check_aliases() {
     fi
 }
 
-_print_possible_aliases() {
-  if (( $#_YSU_ALS > 0 )); then
-    printf "${BLUE}${BOLD}${UNDERLINE}Found aliases based on input command: ${NONE}\n"
-    local -i longest=0
-    # First find the longest alias type indicator (first item when split by :).
-    for al in "${_YSU_ALS[@]}"; do
-      echo $al | cut -d'|' -f1 | wc -m | read len
-      if (( $len > $longest )); then
-        longest=$len
-      fi
-    done
-    # Now the indent value for the printf pattern is obtained; Print output
-    for al in "${_YSU_ALS[@]}"; do
-      echo $al | cut -d'|' -f1 | read altype
-      echo $al | cut -d'|' -f2 | read inputcmd
-      echo $al | cut -d'|' -f3 | read matchingal
-      printf "${BLUE}${BOLD}${DIM}%${longest}s: ${NONE}${BLUE}${BOLD}%s ${NONE}${BLUE}${BOLD}-> ${NONE}${BLUE}${BOLD}%s${NONE}\n" "${altype}" "${inputcmd}" "${matchingal}"
-      #_write_ysu_buffer "${al}"
-    done
-    printf '\e[0m\n'
-    _YSU_ALS=()
-  fi
-}
-
-# Add an alias that was found for the input command to the list of aliases to be
-# printed in the precmd hook after command has ran successfully.
-_add_to_aliases() {
-  if (( $# >= 3 )); then
-    _YSU_ALS+=( "$(printf '%s|%s|%s' $1 $2 $3)" )
-  else
-    printf "${RED}${BOLD}Error in plugin: '_add_to_aliases()' was called with $# parameters;${NONE}" >&2
-    printf "${RED}3 parameters are required: 1: Alias Type, 2: Input Command, and 3: Found Matching Alias.${NONE}" >&2
-    return 1
-  fi
-}
-
-# Disable the you_should_use_2art plugin.
-disable_you_should_use_2art() {
+function disable_you_should_use() {
     add-zsh-hook -D preexec _check_aliases
     add-zsh-hook -D preexec _check_global_aliases
     add-zsh-hook -D preexec _check_git_aliases
-    add-zsh-hook -D preexec _print_possible_aliases
     add-zsh-hook -D precmd _flush_ysu_buffer
-
 }
 
-# Enable the you_should_use_2art plugin.
-enable_you_should_use_2art() {
-    disable_you_should_use_2art   # Delete any possible pre-existing hooks
+function enable_you_should_use() {
+    disable_you_should_use   # Delete any possible pre-existing hooks
     add-zsh-hook preexec _check_aliases
     add-zsh-hook preexec _check_global_aliases
     add-zsh-hook preexec _check_git_aliases
-    add-zsh-hook preexec _print_possible_aliases
     add-zsh-hook precmd _flush_ysu_buffer
 }
 
-
 autoload -Uz add-zsh-hook
-enable_you_should_use_2art
+enable_you_should_use
