@@ -1,3 +1,10 @@
+ZSH You Should Use - 2art's Fork
+==============
+
+This forks is WIP; I have planned full customization for the colorization and
+output overall, and functionality to locate aliases, and suggestions on how to
+improve existing ones. For now, personal use only.
+
 You Should Use
 ==============
 
